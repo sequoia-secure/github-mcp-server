@@ -2,12 +2,17 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
 	ghcontext "github.com/github/github-mcp-server/pkg/context"
 	headers "github.com/github/github-mcp-server/pkg/http/headers"
 )
+
+// ErrNoCredential is returned when TokenProviderCtx yields no token for a
+// request bound to an allowed host.
+var ErrNoCredential = errors.New("no credential available for this request: the GitHub App installation token could not be obtained")
 
 type BearerAuthTransport struct {
 	Transport http.RoundTripper
@@ -20,7 +25,11 @@ type BearerAuthTransport struct {
 	// TokenProviderCtx, when non-nil, supplies the bearer token for each
 	// request from the request's context and takes precedence over both
 	// TokenProvider and Token. It lets one server hold several credentials
-	// and pick one per tool call (see githubapp.MultiProvider).
+	// and pick one per tool call (see githubapp.MultiProvider). Unlike the
+	// other modes, an empty token from this provider fails the request
+	// instead of sending it unauthenticated: a multi-credential server has
+	// no anonymous mode, and an unauthenticated search would return public
+	// results that look like they came from the selected organization.
 	TokenProviderCtx func(ctx context.Context) string
 
 	// AllowedHosts, when non-empty, restricts the hosts the Authorization
@@ -53,6 +62,8 @@ func (t *BearerAuthTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		req.Header.Del(headers.AuthorizationHeader)
 	} else if token != "" {
 		req.Header.Set(headers.AuthorizationHeader, "Bearer "+token)
+	} else if t.TokenProviderCtx != nil {
+		return nil, ErrNoCredential
 	}
 
 	// Check for GraphQL-Features in context and add header if present

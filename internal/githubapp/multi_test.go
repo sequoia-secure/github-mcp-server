@@ -83,14 +83,6 @@ func TestNewMultiProviderValidation(t *testing.T) {
 		require.ErrorContains(t, err, "installations are required")
 	})
 
-	t.Run("default must be configured", func(t *testing.T) {
-		cfg := base
-		cfg.Installations = map[string]string{"acme": "1"}
-		cfg.DefaultLogin = "other"
-		_, err := NewMultiProvider(cfg, quietLogger())
-		require.ErrorContains(t, err, `default installation "other"`)
-	})
-
 	t.Run("per-installation config errors name the login", func(t *testing.T) {
 		cfg := base
 		cfg.AppID = ""
@@ -102,11 +94,9 @@ func TestNewMultiProviderValidation(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
 		cfg := base
 		cfg.Installations = map[string]string{"Acme": "1", "beta": "2"}
-		cfg.DefaultLogin = "ACME"
 		mp, err := NewMultiProvider(cfg, quietLogger())
 		require.NoError(t, err)
 		assert.Equal(t, []string{"acme", "beta"}, mp.Logins())
-		assert.Equal(t, "acme", mp.DefaultLogin())
 		assert.True(t, mp.Has("acme"))
 		assert.True(t, mp.Has("BETA"))
 		assert.False(t, mp.Has("gamma"))
@@ -122,7 +112,6 @@ func TestMultiProviderSelectsTokenByContext(t *testing.T) {
 		PrivateKeyPEM: pkcs1PEMBytes(key),
 		BaseRESTURL:   srv.URL + "/",
 		Installations: map[string]string{"acme": "111", "beta": "222"},
-		DefaultLogin:  "acme",
 	}, quietLogger())
 	require.NoError(t, err)
 
@@ -131,7 +120,7 @@ func TestMultiProviderSelectsTokenByContext(t *testing.T) {
 
 	assert.Equal(t, "ghs_acme", mp.AccessToken(acmeCtx))
 	assert.Equal(t, "ghs_beta", mp.AccessToken(betaCtx), "login lookup is case-insensitive")
-	assert.Equal(t, "ghs_acme", mp.AccessToken(context.Background()), "no owner falls back to the default")
+	assert.Equal(t, "ghs_acme", mp.AccessToken(context.Background()), "no owner falls back to the first configured login")
 	assert.Equal(t, int32(2), calls.Load(), "one token request per installation")
 
 	// Cached on repeat.
@@ -145,18 +134,18 @@ func TestMultiProviderSelectsTokenByContext(t *testing.T) {
 	assert.Equal(t, int32(2), calls.Load())
 }
 
-func TestMultiProviderNoDefaultReturnsEmptyForUnscopedRequests(t *testing.T) {
+func TestMultiProviderUnscopedRequestUsesFirstLogin(t *testing.T) {
 	key := newTestKey(t)
-	srv, calls := multiInstallationServer(t, map[string]string{"111": "ghs_acme"})
+	srv, calls := multiInstallationServer(t, map[string]string{"111": "ghs_acme", "222": "ghs_beta"})
 
 	mp, err := NewMultiProvider(MultiConfig{
 		AppID:         "123",
 		PrivateKeyPEM: pkcs1PEMBytes(key),
 		BaseRESTURL:   srv.URL + "/",
-		Installations: map[string]string{"acme": "111"},
+		Installations: map[string]string{"zeta": "222", "acme": "111"},
 	}, quietLogger())
 	require.NoError(t, err)
 
-	assert.Equal(t, "", mp.AccessToken(context.Background()))
-	assert.Equal(t, int32(0), calls.Load())
+	assert.Equal(t, "ghs_acme", mp.AccessToken(context.Background()), "sorted order, not map order")
+	assert.Equal(t, int32(1), calls.Load())
 }

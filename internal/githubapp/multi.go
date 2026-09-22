@@ -30,11 +30,6 @@ type MultiConfig struct {
 	// the app installation on that account. Logins are matched
 	// case-insensitively.
 	Installations map[string]string
-
-	// DefaultLogin, when set, names the installation used for requests that
-	// do not identify an account (for example an unqualified search). It must
-	// be a key of Installations.
-	DefaultLogin string
 }
 
 // ParseInstallations parses a comma-separated "login=installationID" list,
@@ -65,9 +60,9 @@ func ParseInstallations(spec string) (map[string]string, error) {
 
 // MultiProvider selects a per-installation token for each request.
 type MultiProvider struct {
-	providers    map[string]*Provider
-	defaultLogin string
-	logger       *slog.Logger
+	providers map[string]*Provider
+	logins    []string // sorted keys of providers
+	logger    *slog.Logger
 
 	mu     sync.Mutex
 	warned map[string]bool
@@ -94,17 +89,16 @@ func NewMultiProvider(cfg MultiConfig, logger *slog.Logger) (*MultiProvider, err
 		}
 		providers[strings.ToLower(login)] = p
 	}
-	defaultLogin := strings.ToLower(strings.TrimSpace(cfg.DefaultLogin))
-	if defaultLogin != "" {
-		if _, ok := providers[defaultLogin]; !ok {
-			return nil, fmt.Errorf("default installation %q is not among the configured installations", cfg.DefaultLogin)
-		}
+	logins := make([]string, 0, len(providers))
+	for login := range providers {
+		logins = append(logins, login)
 	}
+	sort.Strings(logins)
 	return &MultiProvider{
-		providers:    providers,
-		defaultLogin: defaultLogin,
-		logger:       logger,
-		warned:       map[string]bool{},
+		providers: providers,
+		logins:    logins,
+		logger:    logger,
+		warned:    map[string]bool{},
 	}, nil
 }
 
@@ -116,30 +110,21 @@ func (m *MultiProvider) Has(login string) bool {
 
 // Logins returns the configured account logins, sorted.
 func (m *MultiProvider) Logins() []string {
-	out := make([]string, 0, len(m.providers))
-	for login := range m.providers {
-		out = append(out, login)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// DefaultLogin returns the login used when a request names no account, or
-// "" when there is none.
-func (m *MultiProvider) DefaultLogin() string {
-	return m.defaultLogin
+	return append([]string(nil), m.logins...)
 }
 
 // AccessToken returns the installation token for the account recorded in
-// ctx, falling back to the default installation. It returns "" (so the
-// request goes out unauthenticated and fails at GitHub rather than with the
-// wrong tenant's credential) when the account is unknown and no default is
-// configured. Tool calls are expected to be validated up front by the
-// routing middleware, so this path is a safety net, logged once per login.
+// ctx. Requests that carry no account (the server's own housekeeping calls;
+// tool calls always carry one after the routing middleware) use the first
+// configured installation, so they are still authenticated. It returns ""
+// for an unknown account, so such a request goes out unauthenticated and
+// fails at GitHub rather than with another tenant's credential; the routing
+// middleware rejects those calls up front, so this is a safety net, logged
+// once per login.
 func (m *MultiProvider) AccessToken(ctx context.Context) string {
 	login, ok := ghcontext.GetInstallationOwner(ctx)
 	if !ok {
-		login = m.defaultLogin
+		login = m.logins[0]
 	}
 	p, found := m.providers[strings.ToLower(login)]
 	if !found {
@@ -147,7 +132,7 @@ func (m *MultiProvider) AccessToken(ctx context.Context) string {
 		if !m.warned[login] {
 			m.warned[login] = true
 			m.logger.Error("no GitHub App installation configured for account; request will be unauthenticated",
-				"login", login, "configured", m.Logins())
+				"login", login, "configured", m.logins)
 		}
 		m.mu.Unlock()
 		return ""

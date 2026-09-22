@@ -432,6 +432,11 @@ func TestBearerAuthTransport_TokenProviderCtxSelectsPerRequest(t *testing.T) {
 	do(ghcontext.WithInstallationOwner(context.Background(), "beta"))
 	assert.Equal(t, "Bearer token-for-beta", gotAuth, "token follows the request context")
 
-	do(context.Background())
-	assert.Equal(t, "", gotAuth, "an empty token from the context provider sends no Authorization header")
+	gotAuth = "unchanged"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	resp, err := rt.RoundTrip(req)
+	require.ErrorIs(t, err, ErrNoCredential, "an empty token from the context provider fails the request")
+	assert.Nil(t, resp)
+	assert.Equal(t, "unchanged", gotAuth, "nothing was sent")
 }
