@@ -104,9 +104,10 @@ func createGitHubClients(cfg github.MCPServerConfig, apiHost utils.APIHostResolv
 			Transport: &transport.GraphQLFeaturesTransport{
 				Transport: http.DefaultTransport,
 			},
-			Token:         cfg.Token,
-			TokenProvider: cfg.TokenProvider,
-			AllowedHosts:  allowedHosts,
+			Token:            cfg.Token,
+			TokenProvider:    cfg.TokenProvider,
+			TokenProviderCtx: cfg.TokenProviderCtx,
+			AllowedHosts:     allowedHosts,
 		},
 	}
 
@@ -157,10 +158,11 @@ func createGitHubClients(cfg github.MCPServerConfig, apiHost utils.APIHostResolv
 func newRESTClient(cfg github.MCPServerConfig, uaTransport *transport.UserAgentTransport, restURL, uploadURL string, allowedHosts []string) (*gogithub.Client, error) {
 	return gogithub.NewClient(
 		gogithub.WithHTTPClient(&http.Client{Transport: &transport.BearerAuthTransport{
-			Transport:     uaTransport,
-			Token:         cfg.Token,
-			TokenProvider: cfg.TokenProvider,
-			AllowedHosts:  allowedHosts,
+			Transport:        uaTransport,
+			Token:            cfg.Token,
+			TokenProvider:    cfg.TokenProvider,
+			TokenProviderCtx: cfg.TokenProviderCtx,
+			AllowedHosts:     allowedHosts,
 		}}),
 		gogithub.WithEnterpriseURLs(restURL, uploadURL),
 	)
@@ -303,12 +305,20 @@ type StdioServerConfig struct {
 
 	// TokenProvider supplies a token for each GitHub API request.
 	TokenProvider func() string
+
+	// TokenProviderCtx supplies a token for each GitHub API request from the
+	// request context. Mutually exclusive with the other authentication modes.
+	TokenProviderCtx func(ctx context.Context) string
+
+	// ToolHandlerMiddleware is appended to the server's tool-handler
+	// middleware chain (for example installation routing).
+	ToolHandlerMiddleware []inventory.ToolHandlerMiddleware
 }
 
 // RunStdioServer is not concurrent safe.
 func RunStdioServer(cfg StdioServerConfig) error {
 	authModes := 0
-	for _, on := range []bool{cfg.Token != "", cfg.OAuthManager != nil, cfg.TokenProvider != nil} {
+	for _, on := range []bool{cfg.Token != "", cfg.OAuthManager != nil, cfg.TokenProvider != nil, cfg.TokenProviderCtx != nil} {
 		if on {
 			authModes++
 		}
@@ -361,7 +371,7 @@ func RunStdioServer(cfg StdioServerConfig) error {
 	}
 
 	tokenProvider := cfg.TokenProvider
-	var toolHandlerMiddleware []inventory.ToolHandlerMiddleware
+	toolHandlerMiddleware := append([]inventory.ToolHandlerMiddleware{}, cfg.ToolHandlerMiddleware...)
 	if cfg.OAuthManager != nil {
 		tokenProvider = cfg.OAuthManager.AccessToken
 		toolHandlerMiddleware = append(toolHandlerMiddleware, createOAuthToolMiddleware(cfg.OAuthManager, logger))
@@ -384,6 +394,7 @@ func RunStdioServer(cfg StdioServerConfig) error {
 		RepoAccessTTL:         cfg.RepoAccessCacheTTL,
 		TokenScopes:           tokenScopes,
 		TokenProvider:         tokenProvider,
+		TokenProviderCtx:      cfg.TokenProviderCtx,
 		ToolHandlerMiddleware: toolHandlerMiddleware,
 	})
 	if err != nil {

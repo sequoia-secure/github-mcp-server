@@ -393,3 +393,45 @@ func TestBearerAuthTransport_RemovesAuthorizationFromDisallowedHost(t *testing.T
 	assert.Empty(t, rec.authByHost[req.URL.Host])
 	assert.NotEmpty(t, req.Header.Get(headers.AuthorizationHeader), "original request must not be mutated")
 }
+
+func TestBearerAuthTransport_TokenProviderCtxSelectsPerRequest(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get(headers.AuthorizationHeader)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	rt := &BearerAuthTransport{
+		Transport: newIsolatedTransport(t),
+		Token:     "static-token",
+		// A static TokenProvider is also set to prove TokenProviderCtx wins.
+		TokenProvider: func() string { return "provider-token" },
+		TokenProviderCtx: func(ctx context.Context) string {
+			owner, ok := ghcontext.GetInstallationOwner(ctx)
+			if !ok {
+				return ""
+			}
+			return "token-for-" + owner
+		},
+	}
+
+	do := func(ctx context.Context) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+		require.NoError(t, err)
+		resp, err := rt.RoundTrip(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+	}
+
+	do(ghcontext.WithInstallationOwner(context.Background(), "acme"))
+	assert.Equal(t, "Bearer token-for-acme", gotAuth)
+
+	do(ghcontext.WithInstallationOwner(context.Background(), "beta"))
+	assert.Equal(t, "Bearer token-for-beta", gotAuth, "token follows the request context")
+
+	do(context.Background())
+	assert.Equal(t, "", gotAuth, "an empty token from the context provider sends no Authorization header")
+}

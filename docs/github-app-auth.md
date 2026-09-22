@@ -61,6 +61,44 @@ For GitHub Enterprise Server or `ghe.com`, also set `--gh-host` or
 `GITHUB_HOST`. The server derives the installation-token endpoint from that
 host.
 
+## Several installations in one server
+
+A GitHub App installed on more than one organization has one installation ID
+per organization, and an installation token only reaches that organization's
+repositories. Instead of running one server per organization, list every
+installation and let the server pick the credential per tool call:
+
+| Flag | Environment variable | Description |
+|------|----------------------|-------------|
+| `--app-installations` | `GITHUB_APP_INSTALLATIONS` | Comma-separated `login=installationID` pairs. Mutually exclusive with `--app-installation-id` |
+| `--app-default-installation` | `GITHUB_APP_DEFAULT_INSTALLATION` | Login from the list to use for calls that name no organization |
+
+```bash
+export GITHUB_APP_ID=123456
+export GITHUB_APP_INSTALLATIONS="acme=7891011,acme-labs=7891012,acme-infra=7891013"
+export GITHUB_APP_DEFAULT_INSTALLATION=acme
+export GITHUB_APP_PRIVATE_KEY_PATH=/secrets/github-app.pem
+github-mcp-server stdio
+```
+
+Each tool call is routed by the account it names. The server reads, in order,
+the `owner`, `org`, `organization`, `username`, `user` or `login` argument, the
+owner half of a `repository` argument written as `owner/name`, or an `org:`,
+`user:`, `owner:` or `repo:owner/name` qualifier inside a `query`/`q` search
+argument. Logins are matched case-insensitively. A call that names an account
+with no configured installation fails immediately with a descriptive error
+rather than reaching GitHub with the wrong credential. A call that names no
+account uses the default installation, and fails if none is configured.
+
+Because installation tokens are scoped to one installation, a search is always
+evaluated within a single organization. Qualify searches with `org:` (or
+`repo:`) to choose which one; unqualified searches run against the default
+installation.
+
+The tool surface is unchanged: the same tools are registered as in
+single-installation mode, and the tool list does not depend on which
+organizations are configured.
+
 ## Troubleshooting
 
 - **Private key required**: set `GITHUB_APP_PRIVATE_KEY_PATH` or

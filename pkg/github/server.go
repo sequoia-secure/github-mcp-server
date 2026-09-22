@@ -72,6 +72,12 @@ type MCPServerConfig struct {
 	// request instead of the static Token.
 	TokenProvider func() string
 
+	// TokenProviderCtx, when non-nil, supplies the GitHub token for each API
+	// request from the request context and takes precedence over
+	// TokenProvider. Used with NewInstallationRoutingMiddleware to serve
+	// several GitHub App installations from one server.
+	TokenProviderCtx func(ctx context.Context) string
+
 	// ToolHandlerMiddleware wraps every registered tool handler. Unlike MCP
 	// receiving middleware, these wrappers execute inside Server.callTool, so
 	// SDK result finalization still runs on results they return.
