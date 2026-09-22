@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -15,6 +16,12 @@ type BearerAuthTransport struct {
 	// TokenProvider, when non-nil, supplies the bearer token for each request
 	// and takes precedence over Token.
 	TokenProvider func() string
+
+	// TokenProviderCtx, when non-nil, supplies the bearer token for each
+	// request from the request's context and takes precedence over both
+	// TokenProvider and Token. It lets one server hold several credentials
+	// and pick one per tool call (see githubapp.MultiProvider).
+	TokenProviderCtx func(ctx context.Context) string
 
 	// AllowedHosts, when non-empty, restricts the hosts the Authorization
 	// header is attached to. The token is set only when the request host
@@ -36,7 +43,10 @@ type BearerAuthTransport struct {
 func (t *BearerAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	token := t.Token
-	if t.TokenProvider != nil {
+	switch {
+	case t.TokenProviderCtx != nil:
+		token = t.TokenProviderCtx(req.Context())
+	case t.TokenProvider != nil:
 		token = t.TokenProvider()
 	}
 	if !t.hostAllowed(req.URL.Host) {

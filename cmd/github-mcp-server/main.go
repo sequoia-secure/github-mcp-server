@@ -44,7 +44,15 @@ var (
 			appInstallationID := viper.GetString("app-installation-id")
 			appPrivateKeyPath := viper.GetString("app-private-key-path")
 			appPrivateKeyInline := viper.GetString("app-private-key")
-			appAuthRequested := appID != "" || appInstallationID != "" || appPrivateKeyPath != "" || appPrivateKeyInline != ""
+			appInstallations := viper.GetString("app-installations")
+			appDefaultInstallation := viper.GetString("app-default-installation")
+			appAuthRequested := appID != "" || appInstallationID != "" || appPrivateKeyPath != "" || appPrivateKeyInline != "" || appInstallations != ""
+			if appInstallationID != "" && appInstallations != "" {
+				return errors.New("--app-installation-id and --app-installations are mutually exclusive: set only one")
+			}
+			if appDefaultInstallation != "" && appInstallations == "" {
+				return errors.New("--app-default-installation requires --app-installations")
+			}
 
 			oauthClientID := viper.GetString("oauth-client-id")
 			oauthClientSecret := viper.GetString("oauth-client-secret")
@@ -149,7 +157,16 @@ var (
 				stdioServerConfig.OAuthScopes = scopes
 			}
 
-			if appAuthRequested {
+			switch {
+			case appInstallations != "":
+				multi, err := newGitHubAppMultiProvider(appID, appInstallations, appDefaultInstallation, appPrivateKeyPath, appPrivateKeyInline, viper.GetString("host"))
+				if err != nil {
+					return err
+				}
+				stdioServerConfig.TokenProviderCtx = multi.AccessToken
+				stdioServerConfig.ToolHandlerMiddleware = append(stdioServerConfig.ToolHandlerMiddleware,
+					github.NewInstallationRoutingMiddleware(multi.Has, multi.DefaultLogin()))
+			case appAuthRequested:
 				tokenProvider, err := newGitHubAppTokenProvider(appID, appInstallationID, appPrivateKeyPath, appPrivateKeyInline, viper.GetString("host"))
 				if err != nil {
 					return err
@@ -258,6 +275,8 @@ func init() {
 	// The private key has no flag because passing it in argv would expose it.
 	stdioCmd.Flags().String("app-id", "", "GitHub App ID or client ID, enabling non-interactive server-to-server authentication")
 	stdioCmd.Flags().String("app-installation-id", "", "GitHub App installation ID to mint installation access tokens for")
+	stdioCmd.Flags().String("app-installations", "", "Comma-separated login=installationID pairs for a GitHub App installed on several organizations; each tool call is authenticated with the installation matching its owner/org argument. Mutually exclusive with --app-installation-id")
+	stdioCmd.Flags().String("app-default-installation", "", "Login from --app-installations to use for tool calls that name no organization (e.g. unqualified searches)")
 	stdioCmd.Flags().String("app-private-key-path", "", "Path to the GitHub App private key (PEM). Preferred over GITHUB_APP_PRIVATE_KEY: keeps the key off the command line and out of the environment")
 
 	// HTTP-specific flags
@@ -289,6 +308,8 @@ func init() {
 	_ = viper.BindPFlag("oauth-callback-port", stdioCmd.Flags().Lookup("oauth-callback-port"))
 	_ = viper.BindPFlag("app-id", stdioCmd.Flags().Lookup("app-id"))
 	_ = viper.BindPFlag("app-installation-id", stdioCmd.Flags().Lookup("app-installation-id"))
+	_ = viper.BindPFlag("app-installations", stdioCmd.Flags().Lookup("app-installations"))
+	_ = viper.BindPFlag("app-default-installation", stdioCmd.Flags().Lookup("app-default-installation"))
 	_ = viper.BindPFlag("app-private-key-path", stdioCmd.Flags().Lookup("app-private-key-path"))
 	_ = viper.BindPFlag("port", httpCmd.Flags().Lookup("port"))
 	_ = viper.BindPFlag("listen-host", httpCmd.Flags().Lookup("listen-host"))
@@ -316,31 +337,68 @@ func main() {
 	}
 }
 
-func newGitHubAppTokenProvider(appID, installationID, keyPath, keyInline, host string) (func() string, error) {
+// loadAppAuthInputs reads the private key and resolves the REST base URL
+// shared by both GitHub App authentication modes.
+func loadAppAuthInputs(keyPath, keyInline, host string) ([]byte, string, error) {
 	keyBytes, err := loadAppPrivateKey(keyPath, keyInline)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	apiHost, err := utils.NewAPIHost(host)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse host for GitHub App authentication: %w", err)
+		return nil, "", fmt.Errorf("failed to parse host for GitHub App authentication: %w", err)
 	}
 	restURL, err := apiHost.BaseRESTURL(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve REST URL for GitHub App authentication: %w", err)
+		return nil, "", fmt.Errorf("failed to resolve REST URL for GitHub App authentication: %w", err)
+	}
+	return keyBytes, restURL.String(), nil
+}
+
+func newGitHubAppTokenProvider(appID, installationID, keyPath, keyInline, host string) (func() string, error) {
+	keyBytes, restURL, err := loadAppAuthInputs(keyPath, keyInline, host)
+	if err != nil {
+		return nil, err
 	}
 
 	provider, err := githubapp.NewProvider(githubapp.Config{
 		AppID:          appID,
 		InstallationID: installationID,
 		PrivateKeyPEM:  keyBytes,
-		BaseRESTURL:    restURL.String(),
+		BaseRESTURL:    restURL,
 	}, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure GitHub App authentication: %w", err)
 	}
 	return provider.AccessToken, nil
+}
+
+// newGitHubAppMultiProvider configures one GitHub App installed on several
+// accounts (--app-installations). Tool calls are routed to an installation by
+// their owner/org argument; see github.NewInstallationRoutingMiddleware.
+func newGitHubAppMultiProvider(appID, installations, defaultLogin, keyPath, keyInline, host string) (*githubapp.MultiProvider, error) {
+	keyBytes, restURL, err := loadAppAuthInputs(keyPath, keyInline, host)
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := githubapp.ParseInstallations(installations)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --app-installations: %w", err)
+	}
+
+	provider, err := githubapp.NewMultiProvider(githubapp.MultiConfig{
+		AppID:         appID,
+		PrivateKeyPEM: keyBytes,
+		BaseRESTURL:   restURL,
+		Installations: parsed,
+		DefaultLogin:  defaultLogin,
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure GitHub App authentication: %w", err)
+	}
+	return provider, nil
 }
 
 func loadAppPrivateKey(path, inline string) ([]byte, error) {
