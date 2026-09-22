@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 
@@ -65,12 +64,6 @@ type InstallationRouting struct {
 	// Logins returns the configured account logins, sorted.
 	Logins func() []string
 
-	// FanOutTools overrides DefaultFanOutTools when non-nil.
-	FanOutTools map[string]bool
-
-	// AnyInstallationTools overrides DefaultAnyInstallationTools when non-nil.
-	AnyInstallationTools map[string]bool
-
 	// MaxConcurrency bounds the parallel calls of a fan-out. Defaults to 8.
 	MaxConcurrency int
 }
@@ -93,14 +86,7 @@ type InstallationRouting struct {
 //     first configured installation;
 //   - anything else is rejected with the list of configured organizations.
 func NewInstallationRoutingMiddleware(r InstallationRouting) inventory.ToolHandlerMiddleware {
-	fanOut := r.FanOutTools
-	if fanOut == nil {
-		fanOut = DefaultFanOutTools
-	}
-	anyInst := r.AnyInstallationTools
-	if anyInst == nil {
-		anyInst = DefaultAnyInstallationTools
-	}
+	fanOut, anyInst := DefaultFanOutTools, DefaultAnyInstallationTools
 	maxConc := r.MaxConcurrency
 	if maxConc <= 0 {
 		maxConc = 8
@@ -302,14 +288,4 @@ func ownerFromArguments(raw json.RawMessage) string {
 		}
 	}
 	return ""
-}
-
-// sortedKeys is a small helper used by tests and diagnostics.
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }
