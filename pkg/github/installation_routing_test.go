@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -347,4 +348,13 @@ func TestDefaultToolSets(t *testing.T) {
 		"get_global_security_advisory", "get_me", "list_global_security_advisories",
 		"search_orgs", "search_users",
 	}, sortedKeys(DefaultAnyInstallationTools))
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
