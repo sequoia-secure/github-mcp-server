@@ -64,7 +64,7 @@ func (c Config) validate() error {
 func parsePrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
-		return nil, errors.New("no PEM block found in private key")
+		return nil, fmt.Errorf("no PEM block found in private key (%s)", describePEMShape(pemBytes))
 	}
 	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		return key, nil

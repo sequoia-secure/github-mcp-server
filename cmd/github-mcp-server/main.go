@@ -404,7 +404,10 @@ func loadAppPrivateKey(path, inline string) ([]byte, error) {
 		}
 		return data, nil
 	case inline != "":
-		return []byte(strings.ReplaceAll(inline, `\n`, "\n")), nil
+		// Secret stores and shells mangle PEM in predictable ways (escaped or
+		// doubled newlines, quotes, base64 of the file, flattening). Normalize
+		// them all rather than failing on the first paste that is not canonical.
+		return githubapp.NormalizePEM(inline), nil
 	default:
 		return nil, errors.New("GitHub App authentication requires a private key: set GITHUB_APP_PRIVATE_KEY_PATH (preferred) or GITHUB_APP_PRIVATE_KEY")
 	}
