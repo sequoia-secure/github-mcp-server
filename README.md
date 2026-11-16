@@ -1,4 +1,4 @@
-[![Go Report Card](https://goreportcard.com/badge/github.com/github/github-mcp-server)](https://goreportcard.com/report/github.com/github/github-mcp-server)
+[![Go Report Card](https://goreportcard.com/badge/github.com/github/github-mcp-server/v2)](https://goreportcard.com/report/github.com/github/github-mcp-server/v2)
 
 # GitHub MCP Server
 
@@ -13,6 +13,18 @@ The GitHub MCP Server connects AI tools directly to GitHub's platform. This give
 - Team Collaboration: Access discussions, manage notifications, analyze team activity, and streamline processes for your team.
 
 Built for developers who want to connect their AI tools to GitHub context and capabilities, from simple natural language queries to complex multi-step agent workflows.
+
+### Using the Go module
+
+The Go module path is `github.com/github/github-mcp-server/v2`. Library consumers
+must use this prefix in imports, for example
+`github.com/github/github-mcp-server/v2/pkg/github`, and in `go get` commands.
+No `/v2` subdirectory is needed when building from a repository checkout.
+
+The existing `v2.0.0` tag predates this module-path correction and cannot be used
+as a Go module. After this change is merged, a new release such as `v2.0.1` must
+be tagged from a commit containing the corrected module path. Until then,
+consumers can use a pseudo-version from a commit containing this change.
 
 ---
 
@@ -403,7 +415,13 @@ For a complete overview of all installation options, see our **[Installation Gui
 ### Build from source
 
 If you don't have Docker, you can use `go build` to build the binary in the
-`cmd/github-mcp-server` directory, and use the `github-mcp-server stdio` command with the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable set to your token. To specify the output location of the build, use the `-o` flag. You should configure your server to use the built executable as its `command`. For example:
+`cmd/github-mcp-server` directory, and use the `github-mcp-server stdio` command with the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable set to your token. To specify the output location of the build, use the `-o` flag. You should configure your server to use the built executable as its `command`.
+
+STDIO API requests identify the server as `github-mcp-server/<version>` and retain the upstream MCP client's name/version in parentheses when available. Control characters, quotes, backslashes and parentheses in client metadata are escaped so the HTTP header remains valid; ordinary names, versions, spaces and printable Unicode are preserved. Release builds keep their release version. Source and default Docker builds with revision metadata use `vcs-<full-commit-sha>`. The Docker publishing workflow preserves tag versions, including prereleases, and lets branch, pull-request and nightly builds use the linked source revision. The `-dirty` marker applies only when both the revision and modified state come from embedded VCS metadata, never to a valid, explicitly supplied `main.commit`. This is a VCS build identifier, not a release number.
+
+Build the complete package with `go build -o github-mcp-server ./cmd/github-mcp-server` from a Git checkout to embed its VCS revision. For builds without VCS metadata, supply the actual release with `-ldflags '-X main.version=<release>'` or the full source revision with `-ldflags '-X main.commit=<sha>'`. Valid metadata is selected in this order: explicit release, explicit source revision, embedded VCS revision, then installed main-module version. Valid explicit revisions remain authoritative even if build-context filtering changes embedded VCS metadata. Missing or malformed candidates fall through to the next usable source. If none is available, STDIO still starts with the development label `dev` and emits a warning on stderr, leaving stdout available for the MCP protocol. Supply real release or revision metadata when version-specific attribution is needed.
+
+For example:
 
 ```JSON
 {
@@ -608,7 +626,47 @@ The following sets of tools are available:
 | `copilot_spaces` | Copilot Spaces related tools |
 | `github_support_docs_search` | Search docs to answer GitHub product and support questions |
 
+## MCP Skills
+
+The local server bundles workflow skills that replace server instructions when
+enabled with `--features=skills` (or Insiders Mode). Skills are off by default
+and are filtered to the tools available in the connection, so a restricted
+toolset may expose only part of the catalog.
+
+<!-- START AUTOMATED SKILLS -->
+- [`account-and-team-context`](pkg/skills/catalog/skills/account-and-team-context/SKILL.md) — USE FOR: establishing who the authenticated account is, which organisations and teams it belongs to, who sits on a team, and who has write access to a repository. NOT FOR: finding an unfamiliar repository, or choosing what work to do next.
+- [`codebase-exploration`](pkg/skills/catalog/skills/codebase-exploration/SKILL.md) — USE FOR: understanding an unfamiliar repository and how it got that way — its layout, where a behaviour is implemented, and when and why a particular function or line last changed. NOT FOR: editing files, or assessing whether a project is healthy overall.
+- [`copilot-task-delegation`](pkg/skills/catalog/skills/copilot-task-delegation/SKILL.md) — USE FOR: handing a piece of work to the Copilot coding agent — judging whether an issue is scoped tightly enough to delegate, launching it, and asking for an automated first-pass review of a proposed change. NOT FOR: doing the work directly, or reviewing what comes back.
+- [`discussion-participation`](pkg/skills/catalog/skills/discussion-participation/SKILL.md) — USE FOR: taking part in GitHub Discussions — finding the unanswered questions in a category, reading a thread in full, replying to it, and marking the reply that resolved it. NOT FOR: commenting on an issue or a proposed change, or working through a backlog.
+- [`issue-authoring`](pkg/skills/catalog/skills/issue-authoring/SKILL.md) — USE FOR: filing one clear bug report or feature request — checking it is not already reported, choosing its type and fields, breaking it into sub-issues, and giving it a title and body someone can act on. NOT FOR: working through an existing backlog, or discussing an open question with a community.
+- [`issue-backlog-triage`](pkg/skills/catalog/skills/issue-backlog-triage/SKILL.md) — USE FOR: triaging a backlog of open GitHub issues — judging which are actionable, labelling and typing them, linking duplicates and parents, and closing what is dead. NOT FOR: writing one new issue, scheduling committed work, or reviewing pull requests.
+- [`label-scheme-management`](pkg/skills/catalog/skills/label-scheme-management/SKILL.md) — USE FOR: curating the label vocabulary a repository uses — adding ones it lacks, auditing which are actually applied, renaming and recolouring them, merging overlapping ones, and tidying away the unused. NOT FOR: applying an existing label to an issue, or deciding which issues matter.
+- [`notification-triage`](pkg/skills/catalog/skills/notification-triage/SKILL.md) — USE FOR: working through a GitHub notification inbox — deciding what needs a reply, what to unsubscribe from, and what to mark read or done. NOT FOR: triaging a repository issue backlog, or answering review threads on one specific pull request.
+- [`project-planning`](pkg/skills/catalog/skills/project-planning/SKILL.md) — USE FOR: planning and updating work on a GitHub Projects board — reading fields and views, adding issues or pull requests as items, setting status and iteration, and posting a status update. NOT FOR: triaging a repository issue backlog, or preparing a release.
+- [`pull-request-authoring`](pkg/skills/catalog/skills/pull-request-authoring/SKILL.md) — USE FOR: taking a branch of work through to landed — opening the pull request, describing it, requesting reviewers, keeping it current with its base, and merging it once checks and approvals are in. NOT FOR: reviewing someone else's proposal, or acting on review comments left on yours.
+- [`pull-request-code-review`](pkg/skills/catalog/skills/pull-request-code-review/SKILL.md) — USE FOR: examining someone else's pull request and delivering a verdict — reading the diff in context, leaving line-anchored comments as a batch, and approving or requesting changes. NOT FOR: replying to review comments left on your own change, or opening and merging one.
+- [`pull-request-review-feedback`](pkg/skills/catalog/skills/pull-request-review-feedback/SKILL.md) — USE FOR: working through review feedback left on a pull request — reading each unresolved thread, deciding what to change, replying to the reviewer, and resolving threads. NOT FOR: producing a review of a pull request, merging one, or clearing a notification inbox.
+- [`release-preparation`](pkg/skills/catalog/skills/release-preparation/SKILL.md) — USE FOR: cutting a release of a repository — picking the version, assembling the changelog since the last tag, confirming the branch is releasable, and drafting release notes. NOT FOR: assessing overall repository health, triaging security alerts, or working an issue backlog.
+- [`repository-content-changes`](pkg/skills/catalog/skills/repository-content-changes/SKILL.md) — USE FOR: changing what a repository holds or whether it exists at all — opening a working branch, committing files remotely, deleting what should go, and creating, forking or removing the repository itself. NOT FOR: proposing those changes for review, or reading code you do not intend to touch.
+- [`repository-discovery`](pkg/skills/catalog/skills/repository-discovery/SKILL.md) — USE FOR: finding a library, tool or organisation you cannot yet name, judging whether a candidate project is worth depending on, and keeping a starred shortlist useful. NOT FOR: searching inside a repository you have already chosen, or setting one up.
+- [`repository-health-review`](pkg/skills/catalog/skills/repository-health-review/SKILL.md) — USE FOR: judging how well a repository is maintained overall — release cadence, branch and proposal age, issue inflow, build reliability, how many people can maintain it, and outstanding alert counts. NOT FOR: acting on any individual issue, alert or proposed change, or cutting a specific release.
+- [`security-alert-triage`](pkg/skills/catalog/skills/security-alert-triage/SKILL.md) — USE FOR: investigating GitHub security alerts — code scanning, Dependabot, secret scanning and advisories — and deciding what to fix now, schedule, dismiss, or escalate. NOT FOR: summarising overall repository health, or reviewing feedback on a pull request.
+- [`workflow-failure-triage`](pkg/skills/catalog/skills/workflow-failure-triage/SKILL.md) — USE FOR: diagnosing a failing GitHub Actions workflow run — a build gone red, which jobs failed, what their logs say, where the failing step is, and whether a rerun is justified. NOT FOR: judging long-term reliability trends across a repository, or deciding whether a change is ready to ship.
+<!-- END AUTOMATED SKILLS -->
+
 ## Tools
+
+Repository tools expose output schemas and typed `structuredContent` when the negotiated MCP protocol version is a supported version `2026-07-28` or newer. Older clients, clients with an unknown protocol version, and clients omitting the version receive the existing content without an output schema or structured output. Unknown versions are not treated as supported merely because they sort after `2026-07-28`.
+
+For `get_file_contents`, directory results (including field projections) are structured arrays. File downloads and metadata-only responses use a `content` array of typed text, embedded-resource, or resource-link blocks, preserving status messages, text, base64 blobs, empty files, and download links. Text-only repository mutations such as starring and deletion also return a structured `message`; fork responses distinguish a repository reference from an in-progress message. Repository deletion still requires its existing confirmation flow before returning a completed result.
+
+Structured repository results use compact DTOs rather than raw REST objects. Release lookups share the compact release shape with release listings; Git references retain the ref, object type, and SHA; annotated tags retain tag/message/tagger/target information; deletion commits retain SHA, message, authors, tree SHA, parent SHAs, and a human-facing `html_url` when available. Directory entries retain file metadata and useful HTML/download links, but omit API and hypermedia routing URLs even when those fields were requested in a projection. Legacy and unknown protocol versions retain the original text byte-for-byte; modern text-only JSON responses serialize the same compact DTO as `structuredContent`. Non-text resource blocks and tool errors retain their existing content behavior. Structured projections use the same sanitized and filtered source as the legacy formatter.
+
+For `get_repository_tree`, `list_gists`, `get_gist`, `create_gist`, and `update_gist`, gist results retain file names, contents, sizes, language/type information, timestamps, visibility, and compact owner profiles, while omitting API/node and Git transport URLs. Tree entries omit their derivable API URLs. Create/update gist results contain the gist ID and HTML URL. Modern JSON text and structured content serialize the same compact result. Older or unknown protocol versions retain byte-for-byte legacy text without an output schema or structured content.
+
+The issue metadata (`list_issue_types`, `list_issue_fields`), comment (`add_issue_comment`, `update_issue_comment`), dependency (`issue_dependency_read`, `issue_dependency_write`), and duplicate-detection (`find_duplicate`) tools provide typed `outputSchema` and `structuredContent` for negotiated supported protocol versions `2026-07-28` or newer. Older or unknown protocol versions retain the same text responses without these fields. Tool errors do not return structured content. Dependency and duplicate-detection tools retain their existing feature gates.
+
+For negotiated supported protocol versions `2026-07-28` or newer, the consolidated Actions tools (`actions_list`, `actions_get`, `actions_run_trigger`) return structured objects with a `method` discriminant and a method-specific typed field; JSON text contains the same compact projection. Workflow, job, and artifact projections omit API/hypermedia URLs while retaining browser links and useful identifiers, states, timestamps, and usage durations. Run usage lists billable runner environments in deterministic name order. Older and unknown-protocol text responses remain unchanged; `get_job_logs` retains its typed content, URL, or failed-job collection variants.
 
 <!-- START AUTOMATED TOOLS -->
 <details>
@@ -704,6 +762,7 @@ The following sets of tools are available:
 <summary><picture><source media="(prefers-color-scheme: dark)" srcset="pkg/octicons/icons/person-dark.png"><source media="(prefers-color-scheme: light)" srcset="pkg/octicons/icons/person-light.png"><img src="pkg/octicons/icons/person-light.png" width="20" height="20" alt="person"></picture> Context</summary>
 
 - **get_me** - Get my user profile
+  - **MCP App UI**: `ui://github-mcp-server/get-me`
   - No parameters required
 
 - **get_team_members** - Get team members
@@ -714,6 +773,12 @@ The following sets of tools are available:
 - **get_teams** - Get teams
   - **OAuth Challenge Scopes**: `read:org`
   - `user`: Username to get teams for. If not provided, uses the authenticated user. (string, optional)
+
+- **ui_get** - Get UI data
+  - **OAuth Challenge Scopes**: `repo`, `read:org`
+  - `method`: The type of data to fetch (string, required)
+  - `owner`: Repository owner (required for all methods) (string, required)
+  - `repo`: Repository name (required for labels, assignees, milestones, branches, issue fields, reviewers) (string, optional)
 
 </details>
 
@@ -983,6 +1048,7 @@ The following sets of tools are available:
 
 - **issue_write** - Create or update issue/pull request
   - **OAuth Challenge Scopes**: `repo`
+  - **MCP App UI**: `ui://github-mcp-server/issue-write`
   - `assignees`: Usernames to assign to this issue (string[], optional)
   - `body`: Issue body content (string, optional)
   - `duplicate_of`: Issue number that this issue is a duplicate of. Required when state_reason is 'duplicate'. (number, optional)
@@ -1088,7 +1154,9 @@ The following sets of tools are available:
 
 - **list_label** - List labels from a repository
   - **OAuth Challenge Scopes**: `repo`
+  - `after`: Cursor for pagination. Use the cursor from the previous response. (string, optional)
   - `owner`: Repository owner (username or organization name) - required for all operations (string, required)
+  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
   - `repo`: Repository name - required for all operations (string, required)
 
 </details>
@@ -1238,6 +1306,7 @@ The following sets of tools are available:
 
 - **create_pull_request** - Open new pull request
   - **OAuth Challenge Scopes**: `repo`
+  - **MCP App UI**: `ui://github-mcp-server/pr-write`
   - `base`: Branch to merge into (string, required)
   - `body`: PR description (string, optional)
   - `draft`: Create as draft PR (boolean, optional)
@@ -1316,6 +1385,7 @@ The following sets of tools are available:
 
 - **update_pull_request** - Edit pull request
   - **OAuth Challenge Scopes**: `repo`
+  - **MCP App UI**: `ui://github-mcp-server/pr-edit`
   - `base`: New base branch name (string, optional)
   - `body`: New description (string, optional)
   - `draft`: Mark pull request as draft (true) or ready for review (false) (boolean, optional)
@@ -1490,7 +1560,7 @@ The following sets of tools are available:
 
 - **search_repositories** - Search repositories
   - **OAuth Challenge Scopes**: `repo`
-  - `minimal_output`: Return minimal repository information (default: true). When false, returns full GitHub API repository objects. (boolean, optional)
+  - `minimal_output`: Return minimal repository information (default: true). When false, modern clients receive additional curated repository details, not the complete GitHub API object. Legacy clients retain full GitHub API repository objects. (boolean, optional)
   - `order`: Sort order (string, optional)
   - `page`: Page number for pagination (min 1) (number, optional)
   - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
@@ -1506,11 +1576,13 @@ The following sets of tools are available:
 - **get_secret_scanning_alert** - Get secret scanning alert
   - **OAuth Challenge Scopes**: `security_events`
   - `alertNumber`: The number of the alert. (number, required)
+  - `hide_secret`: Whether to exclude the secret value from the response. Defaults to false. (boolean, optional)
   - `owner`: The owner of the repository. (string, required)
   - `repo`: The name of the repository. (string, required)
 
 - **list_secret_scanning_alerts** - List secret scanning alerts
   - **OAuth Challenge Scopes**: `security_events`
+  - `hide_secret`: Whether to exclude secret values from the response. Defaults to false. (boolean, optional)
   - `owner`: The owner of the repository. (string, required)
   - `page`: Page number for pagination (min 1) (number, optional)
   - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)

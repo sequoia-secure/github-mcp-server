@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	ghcontext "github.com/github/github-mcp-server/pkg/context"
+	ghcontext "github.com/github/github-mcp-server/v2/pkg/context"
 )
 
 // MultiConfig describes one GitHub App installed on several accounts. Each

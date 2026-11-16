@@ -6,20 +6,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 
-	ghErrors "github.com/github/github-mcp-server/pkg/errors"
-	"github.com/github/github-mcp-server/pkg/ifc"
-	"github.com/github/github-mcp-server/pkg/inventory"
-	"github.com/github/github-mcp-server/pkg/scopes"
-	"github.com/github/github-mcp-server/pkg/translations"
-	"github.com/github/github-mcp-server/pkg/utils"
-	"github.com/google/go-github/v89/github"
+	ghErrors "github.com/github/github-mcp-server/v2/pkg/errors"
+	"github.com/github/github-mcp-server/v2/pkg/ifc"
+	"github.com/github/github-mcp-server/v2/pkg/inventory"
+	"github.com/github/github-mcp-server/v2/pkg/scopes"
+	"github.com/github/github-mcp-server/v2/pkg/translations"
+	"github.com/github/github-mcp-server/v2/pkg/utils"
+	"github.com/google/go-github/v92/github"
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func GetSecretScanningAlert(t translations.TranslationHelperFunc) inventory.ServerTool {
-	return NewTool(
+	return NewTool[GetSecretScanningAlertInput, *SecretScanningAlertOutput](
 		ToolsetMetadataSecretProtection,
 		mcp.Tool{
 			Name:        "get_secret_scanning_alert",
@@ -43,23 +45,24 @@ func GetSecretScanningAlert(t translations.TranslationHelperFunc) inventory.Serv
 						Type:        "number",
 						Description: "The number of the alert.",
 					},
+					"hide_secret": {
+						Type:        "boolean",
+						Description: "Whether to exclude the secret value from the response. Defaults to false.",
+					},
 				},
 				Required: []string{"owner", "repo", "alertNumber"},
 			},
 		},
 		scopes.RequireAll(scopes.SecurityEvents),
-		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
-			owner, err := RequiredParam[string](args, "owner")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
+		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args GetSecretScanningAlertInput) (*mcp.CallToolResult, *SecretScanningAlertOutput, error) {
+			if args.Owner == "" {
+				return utils.NewToolResultError("missing required parameter: owner"), nil, nil
 			}
-			repo, err := RequiredParam[string](args, "repo")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
+			if args.Repo == "" {
+				return utils.NewToolResultError("missing required parameter: repo"), nil, nil
 			}
-			alertNumber, err := RequiredInt(args, "alertNumber")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
+			if args.AlertNumber == 0 {
+				return utils.NewToolResultError("missing required parameter: alertNumber"), nil, nil
 			}
 
 			client, err := deps.GetClient(ctx)
@@ -67,16 +70,26 @@ func GetSecretScanningAlert(t translations.TranslationHelperFunc) inventory.Serv
 				return nil, nil, fmt.Errorf("failed to get GitHub client: %w", err)
 			}
 
-			alert, resp, err := client.SecretScanning.GetAlert(ctx, owner, repo, int64(alertNumber))
+			apiURL := fmt.Sprintf("repos/%s/%s/secret-scanning/alerts/%d", url.PathEscape(args.Owner), url.PathEscape(args.Repo), args.AlertNumber)
+			if args.HideSecret != nil {
+				apiURL += "?hide_secret=" + strconv.FormatBool(*args.HideSecret)
+			}
+			req, err := client.NewRequest(ctx, http.MethodGet, apiURL, nil)
+			if err != nil {
+				return utils.NewToolResultErrorFromErr("failed to create request", err), nil, nil
+			}
+			var alert *github.SecretScanningAlert
+			resp, err := client.Do(req, &alert)
+			if resp != nil {
+				defer func() { _ = resp.Body.Close() }()
+			}
 			if err != nil {
 				return ghErrors.NewGitHubAPIErrorResponse(ctx,
-					fmt.Sprintf("failed to get alert with number '%d'", alertNumber),
+					fmt.Sprintf("failed to get alert with number '%d'", args.AlertNumber),
 					resp,
 					err,
 				), nil, nil
 			}
-			defer func() { _ = resp.Body.Close() }()
-
 			if resp.StatusCode != http.StatusOK {
 				body, err := io.ReadAll(resp.Body)
 				if err != nil {
@@ -85,7 +98,7 @@ func GetSecretScanningAlert(t translations.TranslationHelperFunc) inventory.Serv
 				return ghErrors.NewGitHubAPIStatusErrorResponse(ctx, "failed to get alert", resp, body), nil, nil
 			}
 
-			r, err := json.Marshal(alert)
+			r, err := json.Marshal(alert) //nolint:gosec // G117: This security_events-scoped tool intentionally returns the alert's secret; the result is labeled private-untrusted.
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to marshal alert: %w", err)
 			}
@@ -95,8 +108,9 @@ func GetSecretScanningAlert(t translations.TranslationHelperFunc) inventory.Serv
 			// visibility and surface the matched secret material itself, so the
 			// label is always private-untrusted.
 			result = attachStaticIFCLabel(ctx, deps, result, ifc.LabelSecurityAlert())
-			return result, nil, nil
+			return result, secretScanningAlertOutput(alert), nil
 		},
+		normalizeSecurityIntegerArguments("alertNumber"),
 	)
 }
 
@@ -126,12 +140,16 @@ func ListSecretScanningAlerts(t translations.TranslationHelperFunc) inventory.Se
 				Description: "Filter by resolution",
 				Enum:        []any{"false_positive", "wont_fix", "revoked", "pattern_edited", "pattern_deleted", "used_in_tests"},
 			},
+			"hide_secret": {
+				Type:        "boolean",
+				Description: "Whether to exclude secret values from the response. Defaults to false.",
+			},
 		},
 		Required: []string{"owner", "repo"},
 	}
 	WithPagination(schema)
 
-	return NewTool(
+	return NewTool[ListSecretScanningAlertsInput, []*SecretScanningAlertOutput](
 		ToolsetMetadataSecretProtection,
 		mcp.Tool{
 			Name:        "list_secret_scanning_alerts",
@@ -143,55 +161,52 @@ func ListSecretScanningAlerts(t translations.TranslationHelperFunc) inventory.Se
 			InputSchema: schema,
 		},
 		scopes.RequireAll(scopes.SecurityEvents),
-		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, any, error) {
-			owner, err := RequiredParam[string](args, "owner")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
+		func(ctx context.Context, deps ToolDependencies, _ *mcp.CallToolRequest, args ListSecretScanningAlertsInput) (*mcp.CallToolResult, []*SecretScanningAlertOutput, error) {
+			if args.Owner == "" {
+				return utils.NewToolResultError("missing required parameter: owner"), nil, nil
 			}
-			repo, err := RequiredParam[string](args, "repo")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-			state, err := OptionalParam[string](args, "state")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-			secretType, err := OptionalParam[string](args, "secret_type")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-			resolution, err := OptionalParam[string](args, "resolution")
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
+			if args.Repo == "" {
+				return utils.NewToolResultError("missing required parameter: repo"), nil, nil
 			}
 
-			pagination, err := OptionalPaginationParams(args)
-			if err != nil {
-				return utils.NewToolResultError(err.Error()), nil, nil
-			}
-
+			pagination := securityPagination(args.Page, args.PerPage)
 			client, err := deps.GetClient(ctx)
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to get GitHub client: %w", err)
 			}
-			alerts, resp, err := client.SecretScanning.ListAlertsForRepo(ctx, owner, repo, &github.SecretScanningAlertListOptions{
-				State:      state,
-				SecretType: secretType,
-				Resolution: resolution,
-				ListOptions: github.ListOptions{
-					Page:    pagination.Page,
-					PerPage: pagination.PerPage,
-				},
-			})
+			query := url.Values{
+				"page":     {strconv.Itoa(pagination.Page)},
+				"per_page": {strconv.Itoa(pagination.PerPage)},
+			}
+			if args.State != "" {
+				query.Set("state", args.State)
+			}
+			if args.SecretType != "" {
+				query.Set("secret_type", args.SecretType)
+			}
+			if args.Resolution != "" {
+				query.Set("resolution", args.Resolution)
+			}
+			if args.HideSecret != nil {
+				query.Set("hide_secret", strconv.FormatBool(*args.HideSecret))
+			}
+			apiURL := fmt.Sprintf("repos/%s/%s/secret-scanning/alerts?%s", url.PathEscape(args.Owner), url.PathEscape(args.Repo), query.Encode())
+			req, err := client.NewRequest(ctx, http.MethodGet, apiURL, nil)
+			if err != nil {
+				return utils.NewToolResultErrorFromErr("failed to create request", err), nil, nil
+			}
+			var alerts []*github.SecretScanningAlert
+			resp, err := client.Do(req, &alerts)
+			if resp != nil {
+				defer func() { _ = resp.Body.Close() }()
+			}
 			if err != nil {
 				return ghErrors.NewGitHubAPIErrorResponse(ctx,
-					fmt.Sprintf("failed to list alerts for repository '%s/%s'", owner, repo),
+					fmt.Sprintf("failed to list alerts for repository '%s/%s'", args.Owner, args.Repo),
 					resp,
 					err,
 				), nil, nil
 			}
-			defer func() { _ = resp.Body.Close() }()
-
 			if resp.StatusCode != http.StatusOK {
 				body, err := io.ReadAll(resp.Body)
 				if err != nil {
@@ -200,7 +215,7 @@ func ListSecretScanningAlerts(t translations.TranslationHelperFunc) inventory.Se
 				return ghErrors.NewGitHubAPIStatusErrorResponse(ctx, "failed to list alerts", resp, body), nil, nil
 			}
 
-			r, err := json.Marshal(alerts)
+			r, err := json.Marshal(alerts) //nolint:gosec // G117: This security_events-scoped tool intentionally returns alert secrets; the result is labeled private-untrusted.
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to marshal alerts: %w", err)
 			}
@@ -210,7 +225,9 @@ func ListSecretScanningAlerts(t translations.TranslationHelperFunc) inventory.Se
 			// visibility and surface the matched secret material itself, so the
 			// label is always private-untrusted.
 			result = attachStaticIFCLabel(ctx, deps, result, ifc.LabelSecurityAlert())
-			return result, nil, nil
+			return result, mapSecurityOutputs(alerts, secretScanningAlertOutput), nil
 		},
+		normalizeSecurityIntegerArguments("page", "perPage"),
+		normalizeTypedReadArguments(nil, false),
 	)
 }

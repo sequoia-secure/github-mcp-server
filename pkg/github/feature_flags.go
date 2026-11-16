@@ -3,11 +3,8 @@ package github
 import (
 	"slices"
 
-	"github.com/github/github-mcp-server/pkg/inventory"
+	"github.com/github/github-mcp-server/v2/pkg/inventory"
 )
-
-// MCPAppsFeatureFlag is the feature flag name for MCP Apps (interactive UI forms).
-const MCPAppsFeatureFlag = "remote_mcp_ui_apps"
 
 // MCPAppsDisableFormDeferralFeatureFlag disables handing write-tool calls off
 // to MCP App forms while preserving MCP Apps UI metadata and result views.
@@ -31,6 +28,10 @@ const FeatureFlagFileBlame = "file_blame"
 // unless explicitly opted in.
 const FeatureFlagIssueDependencies = "issue_dependencies"
 
+// FeatureFlagIssueArtifacts explicitly opts into the issue artifact
+// endpoints. Access requirements are unverified; insiders mode does not enable it.
+const FeatureFlagIssueArtifacts = "issue_artifacts"
+
 // FeatureFlagDuplicateDetection is the feature flag name for the find_duplicate
 // tool, which returns ranked duplicate candidates for an existing issue. It is
 // gated so the extra tool is not advertised by default, and is deliberately
@@ -41,13 +42,15 @@ const FeatureFlagDuplicateDetection = "duplicate_detection"
 // FeatureFlagThreadResolutionReason exposes resolution reasons for Copilot review threads.
 const FeatureFlagThreadResolutionReason = "thread_resolution_reason"
 
+// FeatureFlagSkillsExtension replaces server instructions with MCP-served skills.
+const FeatureFlagSkillsExtension = "skills"
+
 // AllowedFeatureFlags is the allowlist of feature flags that can be enabled
 // by users via --features CLI flag, X-MCP-Features HTTP header, or the
 // features URL query parameter.
 // Only flags in this list are accepted; unknown flags are silently ignored.
 // This is the single source of truth for which flags are user-controllable.
 var AllowedFeatureFlags = []string{
-	MCPAppsFeatureFlag,
 	MCPAppsDisableFormDeferralFeatureFlag,
 	FeatureFlagCSVOutput,
 	FeatureFlagIFCLabels,
@@ -55,8 +58,10 @@ var AllowedFeatureFlags = []string{
 	FeatureFlagPullRequestsGranular,
 	FeatureFlagFileBlame,
 	FeatureFlagIssueDependencies,
+	FeatureFlagIssueArtifacts,
 	FeatureFlagDuplicateDetection,
 	FeatureFlagThreadResolutionReason,
+	FeatureFlagSkillsExtension,
 }
 
 // InsidersFeatureFlags is the list of feature flags that insiders mode enables.
@@ -64,10 +69,10 @@ var AllowedFeatureFlags = []string{
 // This is the single source of truth for what "insiders" means in terms of
 // feature flag expansion.
 var InsidersFeatureFlags = []string{
-	MCPAppsFeatureFlag,
 	FeatureFlagCSVOutput,
 	FeatureFlagFileBlame,
 	FeatureFlagIssueDependencies,
+	FeatureFlagSkillsExtension,
 }
 
 // FeatureFlags defines runtime feature toggles that adjust tool behavior.
