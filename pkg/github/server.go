@@ -8,11 +8,12 @@ import (
 	"strings"
 	"time"
 
-	gherrors "github.com/github/github-mcp-server/pkg/errors"
-	"github.com/github/github-mcp-server/pkg/inventory"
-	"github.com/github/github-mcp-server/pkg/octicons"
-	"github.com/github/github-mcp-server/pkg/translations"
-	"github.com/github/github-mcp-server/pkg/utils"
+	gherrors "github.com/github/github-mcp-server/v2/pkg/errors"
+	"github.com/github/github-mcp-server/v2/pkg/inventory"
+	"github.com/github/github-mcp-server/v2/pkg/octicons"
+	"github.com/github/github-mcp-server/v2/pkg/skills"
+	"github.com/github/github-mcp-server/v2/pkg/translations"
+	"github.com/github/github-mcp-server/v2/pkg/utils"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -63,6 +64,11 @@ type MCPServerConfig struct {
 	// or they are explicitly listed in EnabledTools.
 	ExcludeTools []string
 
+	// SkillsSource overrides the bundled skill catalog when skills are enabled.
+	// Extend catalog.Source() with Registry.WithSkills to add integrator skills.
+	// The catalog is filtered against this request's configured tools.
+	SkillsSource *skills.Registry
+
 	// TokenScopes contains the OAuth scopes available to the token.
 	// When non-nil, tools requiring scopes not in this list will be hidden.
 	// This is used for PAT scope filtering where we can't issue scope challenges.
@@ -90,6 +96,7 @@ type MCPServerConfig struct {
 type MCPServerOption func(*mcp.ServerOptions)
 
 func NewMCPServer(ctx context.Context, cfg *MCPServerConfig, deps ToolDependencies, inv *inventory.Inventory, middleware ...mcp.Middleware) (*mcp.Server, error) {
+	ctx = inv.WithFeatureState(ctx)
 	// Create the MCP server
 	serverOpts := &mcp.ServerOptions{
 		Instructions:      inv.Instructions(),
@@ -114,14 +121,34 @@ func NewMCPServer(ctx context.Context, cfg *MCPServerConfig, deps ToolDependenci
 		o(serverOpts)
 	}
 
-	ghServer := NewServer(cfg.Version, cfg.Translator("SERVER_NAME", "github-mcp-server"), cfg.Translator("SERVER_TITLE", "GitHub MCP Server"), serverOpts)
+	publisher, err := skillsPublisher(ctx, cfg, deps, inv)
+	if err != nil {
+		return nil, err
+	}
+	if publisher != nil {
+		serverOpts.Instructions = ""
+		setCacheable := serverOpts.SetCacheable
+		serverOpts.SetCacheable = func(ctx context.Context, req mcp.Request, c *mcp.Cacheable) {
+			if setCacheable != nil {
+				setCacheable(ctx, req, c)
+			}
+			switch req.(type) {
+			case *mcp.ListResourcesRequest, *mcp.ReadResourceRequest:
+				c.CacheScope = "private"
+			}
+		}
+		if serverOpts.Capabilities == nil {
+			serverOpts.Capabilities = &mcp.ServerCapabilities{}
+		}
+		publisher.DeclareCapability(serverOpts.Capabilities)
+	}
 
-	// Add middlewares. Order matters - for example, the error context middleware should be applied last so that it runs FIRST (closest to the handler) to ensure all errors are captured,
-	// and any middleware that needs to read or modify the context should be before it.
-	ghServer.AddReceivingMiddleware(middleware...)
-	ghServer.AddReceivingMiddleware(injectFeatureStateMiddleware(inv))
-	ghServer.AddReceivingMiddleware(InjectDepsMiddleware(deps))
-	ghServer.AddReceivingMiddleware(addGitHubAPIErrorToContext)
+	ghServer := NewServer(cfg.Version, cfg.Translator("SERVER_NAME", "github-mcp-server"), cfg.Translator("SERVER_TITLE", "GitHub MCP Server"), serverOpts)
+	if publisher != nil {
+		if err := publisher.Install(ghServer); err != nil {
+			return nil, fmt.Errorf("install skills extension: %w", err)
+		}
+	}
 
 	if unrecognized := inv.UnrecognizedToolsets(); len(unrecognized) > 0 {
 		cfg.Logger.Warn("Warning: unrecognized toolsets ignored", "toolsets", strings.Join(unrecognized, ", "))
@@ -130,11 +157,20 @@ func NewMCPServer(ctx context.Context, cfg *MCPServerConfig, deps ToolDependenci
 	// Register GitHub tools/resources/prompts from the inventory.
 	inv.RegisterAll(ctx, ghServer, deps, cfg.ToolHandlerMiddleware...)
 
+	// Add request middleware after registering tools so it wraps the protocol
+	// adapter. Preflight and legacy typed calls then receive the same request
+	// context as modern typed calls.
+	// Middleware order matters: the error context wrapper is applied last so it
+	// runs first and can observe errors from every inner middleware.
+	ghServer.AddReceivingMiddleware(middleware...)
+	ghServer.AddReceivingMiddleware(injectFeatureStateMiddleware(inv))
+	ghServer.AddReceivingMiddleware(InjectDepsMiddleware(deps))
+	ghServer.AddReceivingMiddleware(addGitHubAPIErrorToContext)
+
 	// Register MCP App UI resources whenever the embedded UI assets are
-	// available. The resources are static HTML and are only referenced by
-	// tools when the remote_mcp_ui_apps feature flag is enabled for the
-	// request (the inventory strips the _meta.ui block otherwise via
-	// stripMCPAppsMetadata), so registering them unconditionally is safe.
+	// available. The resources are static HTML referenced by tools' _meta.ui
+	// block (the inventory strips that block for clients that do not support
+	// MCP Apps), so registering them unconditionally is safe.
 	// Registering here — rather than in the stdio bootstrap — ensures the
 	// remote/HTTP server also serves them, fixing the "-32002 Resource not
 	// found" error clients hit after the tool returns a ui:// URI.
@@ -216,7 +252,9 @@ func CompletionsHandler(getClient GetClientFn) func(ctx context.Context, req *mc
 			}
 			return nil, fmt.Errorf("unsupported resource URI: %s", req.Params.Ref.URI)
 		case "ref/prompt":
-			return nil, nil
+			return &mcp.CompleteResult{
+				Completion: mcp.CompletionResultDetails{Values: []string{}},
+			}, nil
 		default:
 			return nil, fmt.Errorf("unsupported ref type: %s", req.Params.Ref.Type)
 		}

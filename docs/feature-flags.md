@@ -35,7 +35,106 @@ Only flags listed in
 [`AllowedFeatureFlags`](../pkg/github/feature_flags.go) can be enabled by
 end users. Insiders-only flags are not user-toggleable.
 
+## MCP skills
+
+The `skills` flag replaces server instructions with bundled workflow skills
+served through the `io.modelcontextprotocol/skills` extension. It is off by
+default and enabled automatically in Insiders Mode:
+
+```bash
+github-mcp-server stdio --features=skills
+# Equivalent opt-in: GITHUB_FEATURES=skills
+github-mcp-server stdio --insiders
+```
+
+When enabled, both initialization and `server/discover` omit instructions entirely.
+There is no discovery blurb or fallback instructions for clients without skills
+support. Without the flag, the existing server instructions are unchanged and
+the skills extension is not advertised.
+
+Clients discover skills with paginated `skills/list`, resolve one with
+`skills/get`, and read `skill://github.com/<name>/SKILL.md` and supporting files
+through `resources/read`. Directory reads are also supported. Entries contain
+the file manifests, byte lengths and SHA-256 digests defined by the
+[beta extension specification](https://github.com/modelcontextprotocol/ext-skills/blob/main/specification/beta/skills.mdx).
+
+The catalog is filtered against the current connection's tools: toolsets,
+explicit tools, exclusions, read-only mode, feature variants and token-scope
+filters apply. All required core tools must be available; missing optional tools
+are allowed. A withheld skill is unavailable through listing, direct get,
+directory reads and file reads alike. Tool associations remain server-side:
+there is no `allowed-tools` frontmatter or skill metadata on tools, and loading
+a skill grants no tool permissions.
+
+For a Copilot CLI build with experimental MCP skills support, enable
+`MCP_SKILLS=true` and add a stdio server:
+
+```bash
+MCP_SKILLS=true copilot --additional-mcp-config \
+  '{"mcpServers":{"github":{"type":"local","command":"/absolute/path/to/github-mcp-server","args":["stdio","--features=skills","--toolsets=context"],"tools":["*"]}}}'
+```
+
+In the CLI, use `/skills list` and invoke the discovered server-qualified skill
+command. For the `github` server above, the account skill command is
+`/mcp:github:skill:github.com:account-and-team-context`. Remove the context-only
+toolset restriction to expose workflows supported by the default toolsets.
+
+Supply credentials through the normal server environment, not configuration
+arguments or transcripts. Skill activation requires the client's explicit skill
+consent even with `/allow-all` or `--yolo`. Discovery, command naming and consent
+behavior depend on the CLI build; this flag alone does not establish client
+conformance.
+
+VS Code Insiders can opt into its skills client with
+`chat.agentHost.mcpSkills.enabled: true`, using the same server configuration.
+That setting is a client prerequisite, not a claim that every VS Code build
+supports every extension feature.
+
+Library integrators can extend `catalog.Source()` using `Registry.WithSkills`
+and supply the resulting registry as `MCPServerConfig.SkillsSource`. Set each
+additional skill's `RequiredTools` (groups of alternative tool names) and
+`OptionalTools` before building the registry. The shared constructor filters the
+catalog per request and removes instructions when its feature checker enables
+`github.FeatureFlagSkillsExtension`.
+
 ## Declaring tool availability
+
+### Issue artifacts
+
+Enable `--features=issue_artifacts` (or `GITHUB_FEATURES=issue_artifacts`) to
+expose `issue_artifact_read` (`method: list | get`) and `issue_artifact_write`
+(`method: create | update | delete`) in the `issues` toolset.
+This flag is **off by default**, including in Insiders mode. Read-only mode
+exposes only `issue_artifact_read`.
+
+The MCP flag only exposes tools; it does not grant API access. The tools
+use the configured authenticated GitHub client and base URL without an
+endpoint-specific preview header. They declare `repo` in their OAuth challenge
+metadata; API access also depends on the token's permissions and repository
+access. API failures are returned explicitly; writes are not retried.
+
+Artifact numbers are scoped to their owning issue, not global IDs. Updates
+preserve omitted fields, allow `body: ""` to clear the body, and cannot change
+type. Lists return one explicit `page`/`perPage` with bodies; request successive
+pages until fewer than `perPage` artifacts are returned. This works with or
+without REST `Link` headers; the tools do not expose those headers.
+Artifact names and bodies are sanitized as user-authored content.
+Both tools fail closed in lockdown mode because the reference artifact
+response does not identify authors for content-trust checks.
+
+All methods require `owner`, `repo`, and `issue_number`. Get, update, and delete
+also require `artifact_number`. Create requires `type`, `name`, and `body`;
+an empty body is allowed. Update requires `name`, `body`, or both. Method-specific
+fields are rejected when used with another method.
+
+Create and list's optional type filter support the existing REST API types:
+`generic`, `link`, `plan`, and `embedded_html`. For `embedded_html`, supply HTML
+source in `body`. Returned artifact types remain unrestricted for forward
+compatibility.
+
+Get, create, and update return an `artifact` object. List returns a `list` object
+containing `artifacts`, `page`, and `perPage`; delete returns a `deleted` object
+containing `issue_number`, `artifact_number`, and a confirmation message.
 
 Tools, resources, and prompts use `inventory.NewFeatureRule` when feature flags
 change whether they are available. Each rule declares the flags it references
@@ -86,70 +185,6 @@ as output formatting) won't appear here.
 
 <!-- START AUTOMATED FEATURE FLAG TOOLS -->
 
-### `remote_mcp_ui_apps`
-
-- **create_pull_request** - Open new pull request
-  - **OAuth Challenge Scopes**: `repo`
-  - **MCP App UI**: `ui://github-mcp-server/pr-write`
-  - `base`: Branch to merge into (string, required)
-  - `body`: PR description (string, optional)
-  - `draft`: Create as draft PR (boolean, optional)
-  - `head`: Branch containing changes (string, required)
-  - `maintainer_can_modify`: Allow maintainer edits (boolean, optional)
-  - `owner`: Repository owner (string, required)
-  - `repo`: Repository name (string, required)
-  - `reviewers`: GitHub usernames or ORG/team-slug team reviewers to request reviews from (string[], optional)
-  - `title`: PR title (string, required)
-
-- **get_me** - Get my user profile
-  - **MCP App UI**: `ui://github-mcp-server/get-me`
-  - No parameters required
-
-- **issue_write** - Create or update issue/pull request
-  - **OAuth Challenge Scopes**: `repo`
-  - **MCP App UI**: `ui://github-mcp-server/issue-write`
-  - `assignees`: Usernames to assign to this issue (string[], optional)
-  - `body`: Issue body content (string, optional)
-  - `duplicate_of`: Issue number that this issue is a duplicate of. Required when state_reason is 'duplicate'. (number, optional)
-  - `issue_fields`: Issue field values to set or clear. Each item requires 'field_name' and exactly one of 'value', 'field_option_name', or 'delete: true'. (object[], optional)
-  - `issue_number`: Issue number to update (number, optional)
-  - `labels`: Labels to apply to this issue (string[], optional)
-  - `method`: Write operation to perform on a single issue.
-    Options are:
-    - 'create' - creates a new issue.
-    - 'update' - updates an existing issue.
-     (string, required)
-  - `milestone`: Milestone number (number, optional)
-  - `owner`: Repository owner (string, required)
-  - `parent_issue_number`: Issue number of the parent issue. Only used when method is 'create' and cannot be combined with issue_fields. The new issue is created and attached to this parent in the same operation. (number, optional)
-  - `parent_owner`: Repository owner of the parent issue. Must be provided with parent_repo. Omit both to use owner and repo. Only used when method is 'create' and parent_issue_number is provided. (string, optional)
-  - `parent_repo`: Repository name of the parent issue. Must be provided with parent_owner. Omit both to use owner and repo. Only used when method is 'create' and parent_issue_number is provided. (string, optional)
-  - `repo`: Repository name (string, required)
-  - `state`: New state (string, optional)
-  - `state_reason`: Reason for the state change. Ignored unless state is changed. (string, optional)
-  - `title`: Issue title (string, optional)
-  - `type`: Type of this issue. For updates, pass null to remove the current type. Only use if issue types are enabled for this repository. Use list_issue_types to get valid type values for this repository or its owner organization. If the repository doesn't support issue types, omit this parameter. (string | null, optional)
-
-- **ui_get** - Get UI data
-  - **OAuth Challenge Scopes**: `repo`, `read:org`
-  - `method`: The type of data to fetch (string, required)
-  - `owner`: Repository owner (required for all methods) (string, required)
-  - `repo`: Repository name (required for labels, assignees, milestones, branches, issue fields, reviewers) (string, optional)
-
-- **update_pull_request** - Edit pull request
-  - **OAuth Challenge Scopes**: `repo`
-  - **MCP App UI**: `ui://github-mcp-server/pr-edit`
-  - `base`: New base branch name (string, optional)
-  - `body`: New description (string, optional)
-  - `draft`: Mark pull request as draft (true) or ready for review (false) (boolean, optional)
-  - `maintainer_can_modify`: Allow maintainer edits (boolean, optional)
-  - `owner`: Repository owner (string, required)
-  - `pullNumber`: Pull request number to update (number, required)
-  - `repo`: Repository name (string, required)
-  - `reviewers`: GitHub usernames or ORG/team-slug team reviewers to request reviews from (string[], optional)
-  - `state`: New state (string, optional)
-  - `title`: New title (string, optional)
-
 ### `issues_granular`
 
 - **add_issue_comment_reaction** - Add Reaction to Issue or Pull Request Comment
@@ -183,6 +218,13 @@ as output formatting) won't appear here.
   - `parent_repo`: Repository name of the parent issue. Must be provided with parent_owner. Omit both to use owner and repo. Only used when parent_issue_number is provided. (string, optional)
   - `repo`: Repository name (string, required)
   - `title`: Issue title (string, required)
+
+- **hide_issue_comment** - Hide Issue Comment
+  - **OAuth Challenge Scopes**: `repo`
+  - `classifier`: The reason for hiding the comment (string, required)
+  - `comment_id`: The numeric ID of the issue or pull request conversation comment (number, required)
+  - `owner`: Repository owner (username or organization) (string, required)
+  - `repo`: Repository name (string, required)
 
 - **remove_issue_comment_reaction** - Remove Reaction from Issue or Pull Request Comment
   - **OAuth Challenge Scopes**: `repo`
@@ -218,6 +260,12 @@ as output formatting) won't appear here.
   - **OAuth Challenge Scopes**: `repo`
   - `fields`: Array of issue field values to set. Each element must have a 'field_id' (string, the GraphQL node ID of the field) and exactly one value field: 'text_value' for text fields, 'number_value' for number fields, 'date_value' (ISO 8601 date string) for date fields, or 'single_select_option_id' (the GraphQL node ID of the option) for single select fields. Set 'delete' to true to remove a field value. (object[], required)
   - `issue_number`: The issue number to update (number, required)
+  - `owner`: Repository owner (username or organization) (string, required)
+  - `repo`: Repository name (string, required)
+
+- **unhide_issue_comment** - Unhide Issue Comment
+  - **OAuth Challenge Scopes**: `repo`
+  - `comment_id`: The numeric ID of the issue or pull request conversation comment (number, required)
   - `owner`: Repository owner (username or organization) (string, required)
   - `repo`: Repository name (string, required)
 
@@ -315,6 +363,21 @@ as output formatting) won't appear here.
   - `pullNumber`: The pull request number (number, required)
   - `repo`: Repository name (string, required)
 
+- **hide_pull_request_review** - Hide Pull Request Review
+  - **OAuth Challenge Scopes**: `repo`
+  - `classifier`: The reason for hiding the comment (string, required)
+  - `owner`: Repository owner (username or organization) (string, required)
+  - `pullNumber`: The pull request number (number, required)
+  - `repo`: Repository name (string, required)
+  - `review_id`: The numeric ID of the pull request review (number, required)
+
+- **hide_pull_request_review_comment** - Hide Pull Request Review Comment
+  - **OAuth Challenge Scopes**: `repo`
+  - `classifier`: The reason for hiding the comment (string, required)
+  - `comment_id`: The numeric pull request review comment ID. Use the number from a #discussion_r... anchor, not the GraphQL thread node ID (PRRT_...). (number, required)
+  - `owner`: Repository owner (username or organization) (string, required)
+  - `repo`: Repository name (string, required)
+
 - **remove_pull_request_review_comment_reaction** - Remove Pull Request Review Comment Reaction
   - **OAuth Challenge Scopes**: `repo`
   - `comment_id`: The numeric pull request review comment ID. Use the number from a #discussion_r... anchor, not the GraphQL thread node ID (PRRT_...). (number, required)
@@ -339,6 +402,19 @@ as output formatting) won't appear here.
   - `event`: The review action to perform (string, required)
   - `owner`: Repository owner (username or organization) (string, required)
   - `pullNumber`: The pull request number (number, required)
+  - `repo`: Repository name (string, required)
+
+- **unhide_pull_request_review** - Unhide Pull Request Review
+  - **OAuth Challenge Scopes**: `repo`
+  - `owner`: Repository owner (username or organization) (string, required)
+  - `pullNumber`: The pull request number (number, required)
+  - `repo`: Repository name (string, required)
+  - `review_id`: The numeric ID of the pull request review (number, required)
+
+- **unhide_pull_request_review_comment** - Unhide Pull Request Review Comment
+  - **OAuth Challenge Scopes**: `repo`
+  - `comment_id`: The numeric pull request review comment ID. Use the number from a #discussion_r... anchor, not the GraphQL thread node ID (PRRT_...). (number, required)
+  - `owner`: Repository owner (username or organization) (string, required)
   - `repo`: Repository name (string, required)
 
 - **unresolve_review_thread** - Unresolve Review Thread
@@ -418,6 +494,30 @@ as output formatting) won't appear here.
     - 'blocked_by' - the subject issue is blocked by the related issue.
     - 'blocking' - the subject issue blocks the related issue. (string, required)
 
+### `issue_artifacts`
+
+- **issue_artifact_read** - Read issue artifacts
+  - **OAuth Challenge Scopes**: `repo`
+  - `artifact_number`: Required for get: positive issue-scoped artifact number, not its global ID (integer, optional)
+  - `issue_number`: Positive issue number (integer, required)
+  - `method`:  (string, required)
+  - `owner`: Repository owner (string, required)
+  - `page`: For list only: page number, starting at 1 (default 1) (integer, optional)
+  - `perPage`: For list only: results per page, from 1 to 100 (default 30) (integer, optional)
+  - `repo`: Repository name (string, required)
+  - `type`:  (string, optional)
+
+- **issue_artifact_write** - Write issue artifacts
+  - **OAuth Challenge Scopes**: `repo`
+  - `artifact_number`: Required for update and delete: positive issue-scoped artifact number, not its global ID (integer, optional)
+  - `body`: Required for create, optional for update: artifact content (HTML source for embedded_html); an empty string clears it (string, optional)
+  - `issue_number`: Positive issue number (integer, required)
+  - `method`:  (string, required)
+  - `name`: Required for create, optional for update: nonempty artifact name (string, optional)
+  - `owner`: Repository owner (string, required)
+  - `repo`: Repository name (string, required)
+  - `type`:  (string, optional)
+
 ### `duplicate_detection`
 
 - **find_duplicate** - Find duplicate issues
@@ -425,8 +525,8 @@ as output formatting) won't appear here.
   - `confidence_threshold`: Minimum similarity threshold a candidate must meet to be returned; higher values are stricter. When omitted, the API's high-precision default is used. The scale is defined by the API, so no client-side bounds are enforced. (number, optional)
   - `issue_number`: The number of the existing issue to find duplicates for (number, required)
   - `owner`: The owner of the repository (string, required)
-  - `page`: Page number for pagination (min 1) (number, optional)
-  - `perPage`: Results per page for pagination (min 1, max 100) (number, optional)
+  - `page`: Page number for pagination (min 0). Zero is forwarded for the GitHub API default. (number, optional)
+  - `perPage`: Results per page for pagination (min 0, max 100). Zero is forwarded for the GitHub API default. (number, optional)
   - `repo`: The name of the repository (string, required)
 
 ### `thread_resolution_reason`

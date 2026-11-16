@@ -8,9 +8,9 @@ import (
 	"strings"
 	"sync"
 
-	ghcontext "github.com/github/github-mcp-server/pkg/context"
-	"github.com/github/github-mcp-server/pkg/inventory"
-	"github.com/github/github-mcp-server/pkg/utils"
+	ghcontext "github.com/github/github-mcp-server/v2/pkg/context"
+	"github.com/github/github-mcp-server/v2/pkg/inventory"
+	"github.com/github/github-mcp-server/v2/pkg/utils"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
